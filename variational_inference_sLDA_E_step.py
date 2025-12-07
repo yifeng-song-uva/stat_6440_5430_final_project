@@ -45,7 +45,7 @@ class VI_sLDA_E_Step:
         temp_var_2 = 1/(2*N_d**2*self.delta)
         temp_var_3 = self.eta**2
         for j,v in enumerate(self.bow[d]):
-            log_phi_j = polygamma(0, self.Lambda[:, v]) + polygamma(0, self.gamma[d]) - polygamma(0, self.Lambda_rowsum) # first 2 terms same as the unsupervised case
+            log_phi_j = polygamma(0, self.Lambda[:, v]) + polygamma(0, self.gamma[d]) - polygamma(0, self.Lambda_rowsum) # first 2 terms same as the unsupervised case (see Eq (31) of the SVI paper)
             phi_minus_j = self.phi[d].sum(axis=0) - self.phi[d][j,:] # K-dimensional vector
             log_phi_j += temp_var_1 - temp_var_2 * (2*np.dot(self.eta, phi_minus_j)*self.eta + temp_var_3) # Eq (33) of sLDA paper
             self.phi[d][j,:] = exp_normalize(log_phi_j) # use log-sum-exp normalization, as the raw values of log_phi_j could be very negative
