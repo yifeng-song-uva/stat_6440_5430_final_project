@@ -1,5 +1,7 @@
 import numpy as np
 import math
+import glob
+import os
 
 def normalize_vector(arr):
     arr_sum = np.sum(arr)
@@ -47,3 +49,11 @@ def pct_diff(x1,x2):
         return math.inf
     else:
         return (x2-x1)/np.abs(x1) * 100
+
+def step_size(t, tau, kappa):
+    return (t+tau)**(-kappa)
+
+def delete_all_files(fpath):
+    fn_list = glob.glob(fpath + "/*")
+    for fn in fn_list:
+        os.remove(fn)

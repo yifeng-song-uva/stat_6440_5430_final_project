@@ -11,7 +11,7 @@ def e_step_wrapper(q):
     e_step.save_parameters()
 
 if __name__ == '__main__':
-    m = 10 # Parallelization: each cpu core will process m documents
+    m = 10 # Parallelization: each cpu core will process m documents at a time
     # whenever this script is called in the Jupyter Notebook "train_batch_VI_sLDA_movie_rating.ipynb",
     # it accesses those variables defined in the name space of that Notebook.
     # Thus, within each iteration of the variational EM procedure for sLDA, the E step incorporates

@@ -86,32 +86,35 @@ class VI_sLDA_M_Step:
         phi_bar_times_y = np.dot(self.y, self.phi_bar) # K-dimensional vector
         expect_x_x_t_times_eta = np.dot(self.expect_x_x_t, self.eta) # K-dimensional vector
         y_t_y = np.sum(self.y**2)
-        temp_var = np.sum(self.eta * (phi_bar_times_y - expect_x_x_t_times_eta/2)) # sum of inner product
+        temp_var = np.dot(self.eta, phi_bar_times_y - expect_x_x_t_times_eta/2) # dot product
         g_eta = (1/self.delta)*(phi_bar_times_y - expect_x_x_t_times_eta) # K-dimensional vector
         g_delta = -self.D/2/self.delta + 1/2/self.delta**2 * (y_t_y - 2*temp_var)
-        g = self.scale_factor * np.hstack(g_eta, np.array([g_delta])) # gradient is of K+1 dimensional, scale based on minibatch size
-        h_11 = -1/self.delta*self.expet_x_x_t
+        g = self.scale_factor * np.hstack([g_eta, np.array([g_delta])]) # gradient is of K+1 dimensional, scale based on minibatch size
+        h_11 = -self.expect_x_x_t/self.delta
         h_21 = -g_eta / self.delta # mixed partial derivatives: K-dimensional vector
         h_22 = self.D/2/self.delta**2 - 1/self.delta**3 * (y_t_y - 2*temp_var)
-        h = np.zeros(shape=(self.K+1, self.K+1))
+        h = np.zeros(shape=(self.K+1, self.K+1)) # Hessian of L w.r.t (eta, delta)
         h[:self.K, :self.K] = h_11
         h[self.K, self.K] = h_22
         h[self.K, :self.K] = h_21
         h[:self.K, self.K] = h_21
         h = self.scale_factor * h # (scaled) Hessian is of (K+1) x (K+1) dimensional
         h_inv = np.linalg.inv(h)
-        eta_delta_hat = h_inv @ g # approximated natural gradient of ELBO w.r.t P(Y_{1:corpus_size}|eta, delta)
-        updated_eta_delta = stochastic_hyperparameter_update(np.hstack(self.eta, np.array([self.delta]), eta_delta_hat, self.rho))
-        self.new_eta = updated_eta_delta[:self.K]
-        self.new_delta = updated_eta_delta[self.K]
+        eta_delta_hat = h_inv @ g # the approximated (negative) natural gradient of ELBO w.r.t p(Y_{1:corpus_size}|eta, delta)
+        updated_eta_delta = stochastic_hyperparameter_update(np.hstack([self.eta, np.array([self.delta])]), eta_delta_hat, self.rho)
+        self.new_eta = updated_eta_delta[:self.K] # K-dimensional vector
+        self.new_delta = updated_eta_delta[self.K] # scalar
         
-    def run(self):
-        # run one full M-step
+    def run(self, supervised=True):
+        # run one full M-step: update rules for these 4 set of global parameters together form one step in the stochastic (minibatch) natural gradient ascent procedure
         self.update_Lambda()
         self.update_alpha()
         self.update_xi()
-        self.update_eta_and_delta()
-        return self.new_Lambda, self.new_alpha, self.new_xi, self.new_eta, self.new_delta # output the global parameters to be used in the next iteration of stochastic (minibatch) VI
+        if supervised == True: # minibatch sLDA mode if True; minibatch LDA model if False
+            self.update_eta_and_delta()
+            return self.new_Lambda, self.new_alpha, self.new_xi, self.new_eta, self.new_delta # output the global parameters to be used in the next iteration of stochastic (minibatch) variational EM
+        else:
+            return self.new_Lambda, self.new_alpha, self.new_xi, self.eta, self.delta
 
 
 class batch_VI_sLDA_M_Step(VI_sLDA_M_Step):
@@ -136,6 +139,7 @@ class batch_VI_sLDA_M_Step(VI_sLDA_M_Step):
 
     def optimize_xi(self):
         # run a full Newton-Raphson procedure to optimize xi in the M step
+        # Note: dependent on optimized values of Lambda
         change_in_xi = math.inf
         while change_in_xi > self.epsilon: # convergence criteria
             self.update_xi(batch=True)
@@ -147,7 +151,7 @@ class batch_VI_sLDA_M_Step(VI_sLDA_M_Step):
         expect_x_x_t_inv = np.linalg.inv(self.expect_x_x_t)
         phi_bar_times_y = np.dot(self.y, self.phi_bar) # K-dimensional vector
         new_eta = np.dot(expect_x_x_t_inv, phi_bar_times_y) 
-        self.delta = 1/self.D * (np.sum(self.y**2) - np.dot(phi_bar_times_y, new_eta)) # need to use the optimal value of eta to find the optimal value of delta
+        self.delta = 1/self.D * (np.sum(self.y**2) - np.dot(phi_bar_times_y, new_eta)) # need to use the optimized value of eta to find the optimized value of delta
         self.eta = new_eta
 
     def compute_elbo(self):
