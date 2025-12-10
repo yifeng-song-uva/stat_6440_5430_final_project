@@ -6,9 +6,9 @@ import math
 
 class VI_sLDA_M_Step:
     '''
-    The default mode is minibatch natural gradient descent
+    The default mode for the variational M step is minibatch natural gradient procedure
     '''
-    def __init__(self, K, bow, y, alpha, xi, eta, delta, Lambda, gamma, phi, corpus_size, rho=None):
+    def __init__(self, K, bow, y, alpha, xi, eta, delta, Lambda, gamma, phi, corpus_size, rho=None, rate=None):
         self.K = K # number of topics
         self.bow = bow # Bag of words: dictionary of list of word indices, with length D
         self.doc_len = {d:len(v) for d,v in bow.items()} # number of words within each document
@@ -36,6 +36,7 @@ class VI_sLDA_M_Step:
         self.rho = rho
         self.corpus_size = corpus_size
         self.scale_factor = corpus_size / self.D
+        self.rate = rate # for (eta, delta)
         
     def update_Lambda(self, batch = False):
         # update rule for the global variational parameter Lambda: See Eq (33) of the SVI paper
@@ -88,7 +89,7 @@ class VI_sLDA_M_Step:
         y_t_y = np.sum(self.y**2)
         temp_var = np.dot(self.eta, phi_bar_times_y - expect_x_x_t_times_eta/2) # dot product
         g_eta = (1/self.delta)*(phi_bar_times_y - expect_x_x_t_times_eta) # K-dimensional vector
-        g_delta = -self.D/2/self.delta + 1/2/self.delta**2 * (y_t_y - 2*temp_var)
+        g_delta = -self.D/2/self.delta + 1/2/self.delta**2 * (y_t_y - 2*temp_var) # the term y_t_y - 2*temp_var is positive
         g = self.scale_factor * np.hstack([g_eta, np.array([g_delta])]) # gradient is of K+1 dimensional, scale based on minibatch size
         h_11 = -self.expect_x_x_t/self.delta
         h_21 = -g_eta / self.delta # mixed partial derivatives: K-dimensional vector
@@ -99,8 +100,8 @@ class VI_sLDA_M_Step:
         h[self.K, :self.K] = h_21
         h[:self.K, self.K] = h_21
         h = self.scale_factor * h # (scaled) Hessian is of (K+1) x (K+1) dimensional
-        h_inv = np.linalg.inv(h)
-        eta_delta_hat = h_inv @ g # the approximated (negative) natural gradient of ELBO w.r.t p(Y_{1:corpus_size}|eta, delta)
+        h_inv = np.linalg.inv(h) # inverse of the Hessian matrix
+        eta_delta_hat = self.rate * (h_inv @ g) # the approximated (negative) natural gradient of ELBO w.r.t p(Y_{1:corpus_size}|eta, delta)
         updated_eta_delta = stochastic_hyperparameter_update(np.hstack([self.eta, np.array([self.delta])]), eta_delta_hat, self.rho)
         self.new_eta = updated_eta_delta[:self.K] # K-dimensional vector
         self.new_delta = updated_eta_delta[self.K] # scalar
@@ -118,7 +119,10 @@ class VI_sLDA_M_Step:
 
 
 class batch_VI_sLDA_M_Step(VI_sLDA_M_Step):
-
+    '''
+    This is the variational M step used in batch mode. It's a child class of VI_sLDA_M_Step as many of the methods are the same in batch and stochastic
+    (minibatch mode).
+    '''
     def __init__(self, K, bow, y, alpha, xi, eta, delta, Lambda, gamma, phi, corpus_size, epsilon): 
         super().__init__(K, bow, y, alpha, xi, eta, delta, Lambda, gamma, phi, corpus_size)
         self.epsilon = epsilon # stopping criteria for checking the convergence criteria for Newton-Raphson for alpha and xi
@@ -156,7 +160,7 @@ class batch_VI_sLDA_M_Step(VI_sLDA_M_Step):
 
     def compute_elbo(self):
         '''
-        gammaln() computes the natural log of Gamma function in a numerically stable way
+        Note: gammaln() computes the natural log of Gamma function in a numerically stable way
         '''
         # the corpus-level ELBO computed at the end of every variational EM iteration, which will be used to determine the stopping time of the entire variational EM
         alpha_sum = np.sum(self.alpha)
