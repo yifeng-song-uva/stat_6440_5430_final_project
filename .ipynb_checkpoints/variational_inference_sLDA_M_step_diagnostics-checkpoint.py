@@ -26,17 +26,20 @@ class VI_sLDA_M_Step:
         self.new_Lambda = None
         self.gamma = gamma # local variational parameters gamma from E step (size: D x K)
         self.phi = phi # local variational parameters phi from E step (dictionary: for each document, size is N_d x K)
+        self.rho = rho
+        self.corpus_size = corpus_size
+        self.scale_factor = corpus_size / self.D
+
+    def additional_variables(self):
+        ## Useful for updating (eta, delta)
         self.phi_bar = np.vstack([self.phi[d].mean(axis=0) for d in range(self.D)]) # average phi of each document (size: D x K)
         phi_minus_j = {d:(self.phi[d].sum(axis=0) - self.phi[d]) for d in range(self.D)} # dictionary: for each document, size is N_d x K
-        self.expect_x_x_t = np.zeros(shape=(K,K)) # size: K x K (only dependent on local variational parameter phi)
+        self.expect_x_x_t = np.zeros(shape=(self.K,self.K)) # size: K x K (only dependent on local variational parameter phi)
         for d in range(self.D): # Eq (29) & (35) of the sLDA paper
             N_d = self.doc_len[d]
             self.expect_x_x_t += 1/N_d**2 * (self.phi[d].T @ phi_minus_j[d]) # first term of E[Z @ Z^T]
             self.expect_x_x_t += 1/N_d**2 * np.diag(self.phi[d].sum(axis=0)) # second term of E[Z @ Z^T]
-        self.rho = rho
-        self.corpus_size = corpus_size
-        self.scale_factor = corpus_size / self.D
-        
+
     def update_Lambda(self, batch = False):
         # update rule for the global variational parameter Lambda: See Eq (33) of the SVI paper
         # depends on local variational parameter phi from the E-step
@@ -45,7 +48,7 @@ class VI_sLDA_M_Step:
             for wi,v in enumerate(self.bow[d]): # wi is the wi^th word in the d^th document, v is this word's index in the Vocabulary
                 Lambda_hat[:,v] += self.phi[d][wi,:] # self.phi[d][wi,:] is in fact the variational posterior distribution of topics for the wi^th word in the d^th document
         Lambda_hat = self.scale_factor * Lambda_hat # scale based on minibatch size
-        Lambda_hat += self.xi # same for each variational topic distribution parameter
+        Lambda_hat += self.xi # same for each variational topic distribution parameter; uses broadcasting
         if batch == False:
             self.new_Lambda = stochastic_variational_update(self.Lambda, Lambda_hat, self.rho)
         else:
@@ -116,7 +119,7 @@ class VI_sLDA_M_Step:
         # Determine the appropriate step size for the natural gradient step
         accept = (False, False)
         # find the proper step size for each New-Raphson update through trial and error
-        step_size = np.sqrt(2)
+        step_size = 2 * np.sqrt(2)
         while accept != (True, True):
             step_size = step_size / 2
             eta_hat = step_size * eta_delta_hat[:self.K]
@@ -140,8 +143,12 @@ class VI_sLDA_M_Step:
             self.update_alpha()
             self.update_xi()
         if supervised == True: # run minibatch sLDA mode if True; run minibatch LDA model if False
+            self.additional_variables()
             self.update_eta_and_delta()
-            return self.new_Lambda, self.new_alpha, self.new_xi, self.new_eta, self.new_delta # output the global parameters to be used in the next iteration of stochastic (minibatch) variational EM
+            if update_alpha_and_xi == True:
+                return self.new_Lambda, self.new_alpha, self.new_xi, self.new_eta, self.new_delta # output the global parameters to be used in the next iteration of stochastic (minibatch) variational EM
+            else:
+                return self.new_Lambda, self.alpha, self.xi, self.new_eta, self.new_delta  
         else:
             if update_alpha_and_xi == True:
                 return self.new_Lambda, self.new_alpha, self.new_xi, self.eta, self.delta
@@ -184,6 +191,7 @@ class batch_VI_sLDA_M_Step(VI_sLDA_M_Step):
 
     def optimize_eta_and_delta(self):
         # default method: optimization in terms of eta and delta has a closed-form solution in batch mode VI (Eq (34) & (37) of the SVI paper)
+        self.additional_variables()
         if self.closed_form == True:
             expect_x_x_t_inv = np.linalg.inv(self.expect_x_x_t)
             phi_bar_times_y = np.dot(self.y, self.phi_bar) # K-dimensional vector
@@ -198,7 +206,7 @@ class batch_VI_sLDA_M_Step(VI_sLDA_M_Step):
                 self.eta = self.new_eta.copy()
                 self.delta = self.new_delta.copy()
 
-    def compute_elbo(self):
+    def compute_elbo(self, supervised = True):
         '''
         Note: gammaln() computes the natural log of Gamma function in a numerically stable way
         '''
@@ -206,7 +214,7 @@ class batch_VI_sLDA_M_Step(VI_sLDA_M_Step):
         alpha_sum = np.sum(self.alpha)
         temp_var_1 = polygamma(0, self.gamma).T - polygamma(0, self.gamma.sum(axis=1)) # size: K x D (uses broadcasting)
         self.elbo += self.D * (gammaln(alpha_sum) - np.sum(gammaln(self.alpha))) + np.sum(np.dot(self.alpha-1, temp_var_1)) # E_q[log p(theta_d | alpha)], summing over d
-        for d in range(self.D): # E_q[log p(Z_dn | theta_d)] # summing over d and n
+        for d in range(self.D): # E_q[log p(Z_dn | theta_d)], summing over d and n
             self.elbo += np.dot(self.phi[d].sum(axis=0), temp_var_1[:,d]) # Note: could sum phi_nk over n first as the other factor doesn't depend on n
         xi_sum = np.sum(self.xi)
         temp_var_2 = polygamma(0, self.Lambda).T - polygamma(0, self.Lambda.sum(axis=1)) # size: V x K (doesn't depend on d)
@@ -214,9 +222,10 @@ class batch_VI_sLDA_M_Step(VI_sLDA_M_Step):
             for wi,v in enumerate(self.bow[d]): # wi is the wi^th word in the d^th document, v is the word's index in the Vocabulary
                 # This is looping through n = 1, 2, ..., N_d
                 self.elbo += np.dot(self.phi[d][wi,:], temp_var_2[v,:]) # dot product of two K-dimensional vectors
-        y_t_y = np.sum(self.y**2)
-        phi_bar_times_y = np.dot(self.y, self.phi_bar) # K-dimensional vector
-        self.elbo += -self.D/2*np.log(self.delta) - 1/2/self.delta * (y_t_y + np.dot(self.eta, np.dot(self.expect_x_x_t, self.eta)) - 2*np.dot(self.eta, phi_bar_times_y)) # E_q[p(y_d | Z_d, eta, delta)], summing over d
+        if supervised == True: # ELBO of sLDA has this term, while ELBO of LDA doesn't
+            y_t_y = np.sum(self.y**2)
+            phi_bar_times_y = np.dot(self.y, self.phi_bar) # K-dimensional vector
+            self.elbo += -self.D/2*np.log(self.delta) - 1/2/self.delta * (y_t_y + np.dot(self.eta, np.dot(self.expect_x_x_t, self.eta)) - 2*np.dot(self.eta, phi_bar_times_y)) # E_q[p(y_d | Z_d, eta, delta)], summing over d
         self.elbo += self.K * (gammaln(xi_sum) - np.sum(gammaln(self.xi))) + np.sum(np.dot(self.xi-1, temp_var_2)) # E_q[p(beta_k | lambda_k)], summing over k
         temp_var_3 = 0
         for d in range(self.D):
@@ -241,5 +250,28 @@ class batch_VI_sLDA_M_Step(VI_sLDA_M_Step):
             self.optimize_xi()
         if supervised == True: # default option is to run M step of sLDA; if supervised == False, then run M step of LDA. 
             self.optimize_eta_and_delta()
-        self.compute_elbo()
+            self.compute_elbo()
+        else:
+            self.compute_elbo(False)
         return self.Lambda, self.alpha, self.xi, self.eta, self.delta, self.elbo
+
+
+# class fixed_Lambda_optimizer(batch_VI_sLDA_M_Step):
+
+#     def __init__(self, K, bow, y, alpha, xi, eta, delta, Lambda, gamma, phi, corpus_size): 
+#         super().__init__(K, bow, y, alpha, xi, eta, delta, Lambda, gamma, phi, corpus_size, None, closed_form=True)
+#         self.epsilon = epsilon
+        
+#     def run(self):
+#         self.optimize_eta_and_delta()
+#         self.compute_elbo()
+#         return self.xi, self.eta, self.delta, self.elbo
+
+
+# class Lambda_updater(VI_sLDA_M_Step):
+    
+#     def run(self, update_alpha_and_xi=True):
+#         self.update_Lambda()
+#         if update_alpha_and_xi == True:
+#             self.update_alpha()
+#             self.update_xi()    
